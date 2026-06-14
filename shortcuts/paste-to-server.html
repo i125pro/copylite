@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#000">
+<title>粘贴</title>
+<style>
+*{margin:0;padding:0}
+html,body{height:100%;background:#000;overflow:hidden;-webkit-tap-highlight-color:transparent}
+#toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:1.2rem;font-family:-apple-system,sans-serif;opacity:0;transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="toast"></div>
+<script>
+const S='http://192.168.0.24:8086';
+
+function toast(m,c){
+  const t=document.getElementById('toast');
+  t.textContent=m;
+  if(c)t.style.color=c;
+  t.classList.add('show');
+}
+
+async function readClip(){
+  if(navigator.clipboard&&navigator.clipboard.readText){
+    try{const t=await navigator.clipboard.readText();if(t)return t}catch(e){}
+  }
+  try{
+    const ta=document.createElement('textarea');
+    ta.style.cssText='position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+    ta.setAttribute('readonly','');
+    document.body.appendChild(ta);
+    ta.focus();
+    const ok=document.execCommand('paste');
+    const t=ta.value;
+    document.body.removeChild(ta);
+    if(ok&&t)return t;
+  }catch(e){}
+  return null;
+}
+
+async function run(){
+  const text=await readClip();
+  if(!text){toast('无法读取剪贴板','#888');return}
+  try{
+    const r=await fetch(S+'/api/clipboard',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({content:text})
+    });
+    if(r.ok){toast('已粘贴到服务器')}
+    else{toast('上传失败','#f66')}
+  }catch(e){
+    toast('连接失败','#f66');
+  }
+}
+
+run();
+</script>
+</body>
+</html>

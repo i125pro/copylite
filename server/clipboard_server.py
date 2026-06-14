@@ -19,6 +19,7 @@ from datetime import datetime
 HOST = "0.0.0.0"
 PORT = 8086
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clipboard_data.json")
+SHORTCUTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shortcuts")
 
 # ===== In-memory store =====
 clipboard_store = {
@@ -411,6 +412,23 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"status":"ok"}')
 
+        elif parsed.path in ("/copy", "/paste"):
+            filename = "copy-from-server.html" if parsed.path == "/copy" else "paste-to-server.html"
+            filepath = os.path.join(SHORTCUTS_DIR, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(content.encode("utf-8"))
+            except FileNotFoundError:
+                self.send_response(404)
+                self._cors()
+                self.end_headers()
+                self.wfile.write(b"Shortcut file not found")
+
         else:
             self.send_response(404)
             self._cors()
@@ -451,7 +469,12 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
 # ===== Main =====
 if __name__ == "__main__":
     load_data()
-    server = http.server.HTTPServer((HOST, PORT), ClipboardHandler)
+
+    class ReusableHTTPServer(http.server.HTTPServer):
+        allow_reuse_address = True
+        allow_reuse_port = True
+
+    server = ReusableHTTPServer((HOST, PORT), ClipboardHandler)
     print(f"[Clipboard Server] Running on http://{HOST}:{PORT}")
     print(f"[Clipboard Server] Web UI: http://localhost:{PORT}")
     print(f"[Clipboard Server] API: GET/POST /api/clipboard")

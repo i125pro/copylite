@@ -281,58 +281,97 @@ WEB_UI = r"""<!DOCTYPE html>
 const API_BASE = window.location.origin;
 let authToken = '';
 
-// --- Token Management ---
+// --- Timeout-aware fetch ---
+function fetchWithTimeout(url, options, timeoutMs) {
+  timeoutMs = timeoutMs || 15000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, Object.assign({}, options || {}, {signal: controller.signal}))
+    .finally(() => clearTimeout(timer));
+}
+
+// --- Token Management (localStorage persistence) ---
 function getTokenFromURL() {
   const params = new URLSearchParams(window.location.search);
   return params.get('token') || '';
+}
+
+function saveToken(t) {
+  try { localStorage.setItem('copylite_token', t); } catch(e) {}
+}
+
+function loadToken() {
+  try { return localStorage.getItem('copylite_token') || ''; } catch(e) { return ''; }
 }
 
 function initAuth() {
   const urlToken = getTokenFromURL();
   if (urlToken) {
     authToken = urlToken;
-    // Clean URL
+    saveToken(urlToken);
     window.history.replaceState({}, '', window.location.pathname);
     verifyToken();
   } else {
-    document.getElementById('authOverlay').style.display = 'flex';
+    const saved = loadToken();
+    if (saved) {
+      authToken = saved;
+      verifyToken();
+    } else {
+      document.getElementById('authOverlay').style.display = 'flex';
+    }
   }
 }
 
 function submitToken() {
   const input = document.getElementById('tokenInput').value.trim();
   if (!input) return;
+  document.getElementById('authError').style.display = 'none';
   authToken = input;
+  saveToken(input);
   verifyToken();
 }
 
 async function verifyToken() {
+  document.getElementById('status').textContent = 'Connecting...';
+  document.getElementById('status').style.color = '#94a3b8';
   try {
-    const res = await fetch(API_BASE + '/api/clipboard?token=' + encodeURIComponent(authToken));
+    const res = await fetchWithTimeout(API_BASE + '/api/clipboard?token=' + encodeURIComponent(authToken));
     if (res.ok) {
       document.getElementById('authOverlay').style.display = 'none';
       document.getElementById('mainApp').style.display = 'block';
       fetchClipboard();
+    } else if (res.status === 401) {
+      showAuthError('Invalid token');
     } else {
-      showAuthError();
+      showAuthError('Server error (' + res.status + ')');
     }
   } catch(e) {
-    showAuthError();
+    if (e.name === 'AbortError') {
+      showAuthError('Connection timed out, please retry');
+    } else {
+      showAuthError('Network error, please retry');
+    }
   }
 }
 
-function showAuthError() {
-  authToken = '';
+function showAuthError(msg) {
   document.getElementById('authOverlay').style.display = 'flex';
-  document.getElementById('authError').style.display = 'block';
+  const errEl = document.getElementById('authError');
+  errEl.textContent = msg || 'Invalid token, please try again.';
+  errEl.style.display = 'block';
+  // Don't clear token on network errors - keep it for retry
+  if (msg === 'Invalid token') {
+    authToken = '';
+    try { localStorage.removeItem('copylite_token'); } catch(e) {}
+  }
 }
 
 // --- Authenticated Fetch ---
 function authFetch(url, options) {
   const sep = url.includes('?') ? '&' : '?';
   const authUrl = url + sep + 'token=' + encodeURIComponent(authToken);
-  return fetch(authUrl, options).then(res => {
-    if (res.status === 401) { showAuthError(); throw new Error('Unauthorized'); }
+  return fetchWithTimeout(authUrl, options).then(res => {
+    if (res.status === 401) { showAuthError('Invalid token'); throw new Error('Unauthorized'); }
     return res;
   });
 }
@@ -354,11 +393,12 @@ async function fetchClipboard() {
       document.getElementById('downloadText').value = data.content;
     }
     document.getElementById('status').textContent = 'Connected | Updated: ' + (data.updated_at || '-');
+    document.getElementById('status').style.color = '#64748b';
     renderHistory(data.history || []);
   } catch(e) {
     if (e.message !== 'Unauthorized') {
-      document.getElementById('status').textContent = 'Connection failed';
-      document.getElementById('status').style.color = '#f87171';
+      document.getElementById('status').textContent = 'Retrying...';
+      document.getElementById('status').style.color = '#f59e0b';
     }
   }
 }
@@ -467,7 +507,7 @@ document.getElementById('tokenInput').addEventListener('keydown', function(e) {
 
 // Init
 initAuth();
-setInterval(() => { if (authToken) fetchClipboard(); }, 5000);
+setInterval(() => { if (authToken) fetchClipboard(); }, 10000);
 </script>
 </body>
 </html>"""

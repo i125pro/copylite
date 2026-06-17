@@ -288,13 +288,42 @@ WEB_UI = r"""<!DOCTYPE html>
 const API_BASE = window.location.origin;
 let authToken = '';
 
-// --- Timeout-aware fetch ---
+// --- Timeout-aware fetch with XHR fallback ---
+function xhrRequest(url, options, timeoutMs) {
+  timeoutMs = timeoutMs || 15000;
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const method = (options && options.method) || 'GET';
+    xhr.open(method, url, true);
+    xhr.timeout = timeoutMs;
+    if (options && options.headers) {
+      Object.keys(options.headers).forEach(k => xhr.setRequestHeader(k, options.headers[k]));
+    }
+    xhr.onload = () => {
+      const resp = { ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status,
+        json: () => Promise.resolve(JSON.parse(xhr.responseText)),
+        text: () => Promise.resolve(xhr.responseText),
+        headers: { get: (h) => xhr.getResponseHeader(h) }
+      };
+      resolve(resp);
+    };
+    xhr.onerror = () => reject(new TypeError('XHR failed'));
+    xhr.ontimeout = () => reject(new DOMException('XHR timeout', 'TimeoutError'));
+    xhr.onabort = () => reject(new DOMException('XHR aborted', 'AbortError'));
+    xhr.send(options && options.body ? options.body : null);
+  });
+}
+
 function fetchWithTimeout(url, options, timeoutMs) {
   timeoutMs = timeoutMs || 15000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   return fetch(url, Object.assign({}, options || {}, {signal: controller.signal}))
-    .finally(() => clearTimeout(timer));
+    .finally(() => clearTimeout(timer))
+    .catch(err => {
+      // fetch failed, try XHR as fallback (some proxies block fetch but allow XHR)
+      return xhrRequest(url, options, timeoutMs);
+    });
 }
 
 // --- Token Management (localStorage persistence) ---
@@ -584,7 +613,23 @@ async function runDiag() {
   }
   log('');
 
-  // Test 4: Check online status
+  // Test 4: XHR to health (bypass proxy fetch blocking)
+  log('[Test 4] XHR /api/health (fallback)...');
+  const t4 = Date.now();
+  try {
+    const res = await xhrRequest(API_BASE + '/api/health', null, 20000);
+    const body = await res.text();
+    log('  Status: ' + res.status + ' | Time: ' + (Date.now() - t4) + 'ms');
+    log('  Body: ' + body.substring(0, 100));
+    log('  Result: OK (XHR works! Proxy blocks fetch but allows XHR)');
+  } catch(e) {
+    log('  Time: ' + (Date.now() - t4) + 'ms');
+    log('  Error: ' + e.name + ' - ' + e.message);
+    log('  Result: FAIL (Both fetch and XHR blocked - add IP to proxy bypass)');
+  }
+  log('');
+
+  // Test 5: Check online status
   log('[Info] navigator.onLine: ' + navigator.onLine);
   log('[Info] connection type: ' + (navigator.connection ? navigator.connection.effectiveType : 'unknown'));
   log('');

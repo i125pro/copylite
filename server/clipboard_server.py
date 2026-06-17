@@ -244,11 +244,17 @@ WEB_UI = r"""<!DOCTYPE html>
   <input type="password" class="auth-input" id="tokenInput" placeholder="Paste your token here..." autocomplete="off">
   <button class="auth-btn" onclick="submitToken()">Verify & Enter</button>
   <div class="auth-error" id="authError">Invalid token, please try again.</div>
+  <button class="auth-btn" style="background:#334155;margin-top:10px;" onclick="runDiag()">Test Connection</button>
+  <pre id="diagOutput" style="color:#94a3b8;font-size:0.75rem;margin-top:10px;max-width:360px;width:100%;max-height:200px;overflow:auto;white-space:pre-wrap;text-align:left;background:#1e293b;padding:10px;border-radius:8px;display:none;"></pre>
 </div>
 
 <div class="container" id="mainApp" style="display:none;">
   <h1>CopyLite</h1>
   <div class="status" id="status">Connecting...</div>
+  <div style="text-align:center;margin-bottom:12px;">
+    <button onclick="runDiag()" style="background:#334155;color:#94a3b8;border:none;border-radius:6px;padding:6px 16px;font-size:0.75rem;cursor:pointer;">Diagnose Connection</button>
+  </div>
+  <pre id="diagOutput2" style="color:#94a3b8;font-size:0.7rem;max-height:150px;overflow:auto;white-space:pre-wrap;background:#1e293b;padding:8px;border-radius:8px;display:none;margin-bottom:12px;"></pre>
 
   <div class="card">
     <div class="card-title">Upload to Clipboard</div>
@@ -510,6 +516,80 @@ function escHtml(s) {
 document.getElementById('tokenInput').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') submitToken();
 });
+
+// --- Network Diagnostics ---
+async function runDiag() {
+  const outputs = [document.getElementById('diagOutput'), document.getElementById('diagOutput2')];
+  outputs.forEach(el => { if (el) { el.style.display = 'block'; el.textContent = 'Running diagnostics...'; }});
+  const lines = [];
+  const log = (msg) => { lines.push(msg); outputs.forEach(el => { if (el) el.textContent = lines.join('\n'); }); };
+
+  log('=== CopyLite Network Diagnostics ===');
+  log('Time: ' + new Date().toISOString());
+  log('API_BASE: ' + API_BASE);
+  log('Token: ' + (authToken ? authToken.substring(0, 8) + '...' : '(empty)'));
+  log('User-Agent: ' + navigator.userAgent.substring(0, 80));
+  log('');
+
+  // Test 1: Health endpoint (no auth)
+  log('[Test 1] GET /api/health (no auth)...');
+  const t1 = Date.now();
+  try {
+    const res = await fetchWithTimeout(API_BASE + '/api/health', null, 20000);
+    const body = await res.text();
+    log('  Status: ' + res.status + ' | Time: ' + (Date.now() - t1) + 'ms');
+    log('  Body: ' + body.substring(0, 100));
+    log('  CORS: ' + (res.headers.get('access-control-allow-origin') || 'MISSING'));
+    log('  Result: OK');
+  } catch(e) {
+    log('  Time: ' + (Date.now() - t1) + 'ms');
+    log('  Error: ' + e.name + ' - ' + e.message);
+    log('  Result: FAIL');
+  }
+  log('');
+
+  // Test 2: Clipboard with token
+  log('[Test 2] GET /api/clipboard?token=xxx (auth)...');
+  const t2 = Date.now();
+  try {
+    const res = await fetchWithTimeout(API_BASE + '/api/clipboard?token=' + encodeURIComponent(authToken), null, 20000);
+    const body = await res.text();
+    log('  Status: ' + res.status + ' | Time: ' + (Date.now() - t2) + 'ms');
+    log('  Body: ' + body.substring(0, 120) + (body.length > 120 ? '...' : ''));
+    log('  Result: ' + (res.ok ? 'OK' : 'FAIL'));
+  } catch(e) {
+    log('  Time: ' + (Date.now() - t2) + 'ms');
+    log('  Error: ' + e.name + ' - ' + e.message);
+    log('  Result: FAIL');
+  }
+  log('');
+
+  // Test 3: POST clipboard
+  log('[Test 3] POST /api/clipboard (auth)...');
+  const t3 = Date.now();
+  try {
+    const res = await fetchWithTimeout(API_BASE + '/api/clipboard?token=' + encodeURIComponent(authToken), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: '[diag-test]'})
+    }, 20000);
+    const body = await res.text();
+    log('  Status: ' + res.status + ' | Time: ' + (Date.now() - t3) + 'ms');
+    log('  Body: ' + body.substring(0, 100));
+    log('  Result: ' + (res.ok ? 'OK' : 'FAIL'));
+  } catch(e) {
+    log('  Time: ' + (Date.now() - t3) + 'ms');
+    log('  Error: ' + e.name + ' - ' + e.message);
+    log('  Result: FAIL');
+  }
+  log('');
+
+  // Test 4: Check online status
+  log('[Info] navigator.onLine: ' + navigator.onLine);
+  log('[Info] connection type: ' + (navigator.connection ? navigator.connection.effectiveType : 'unknown'));
+  log('');
+  log('=== Done. Please screenshot this and share. ===');
+}
 
 // Init
 initAuth();

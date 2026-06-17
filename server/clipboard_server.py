@@ -538,19 +538,21 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b'{"status":"ok"}')
             return
 
-        # All other endpoints require auth
-        if not self._check_auth():
-            self._send_unauthorized()
-            return
-
+        # Web UI - no auth required (frontend JS handles token auth via overlay)
         if parsed.path == "/" or parsed.path == "/index.html":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self._cors()
             self.end_headers()
             self.wfile.write(WEB_UI.encode("utf-8"))
+            return
 
-        elif parsed.path == "/api/clipboard":
+        # All other endpoints require auth
+        if not self._check_auth():
+            self._send_unauthorized()
+            return
+
+        if parsed.path == "/api/clipboard":
             with lock:
                 resp = json.dumps(clipboard_store, ensure_ascii=False)
             self.send_response(200)

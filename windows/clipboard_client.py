@@ -15,6 +15,7 @@ import time
 import ctypes
 import urllib.request
 import urllib.error
+import urllib.parse
 import ctypes.wintypes
 
 # ===== 单实例限制：只允许运行一个实例 =====
@@ -29,7 +30,7 @@ if _kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
 
 # ===== Configuration =====
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "clipboard_config.json")
-DEFAULT_SERVER = "http://192.168.0.24:8086"
+DEFAULT_SERVER = "http://192.196.0.24:8086"
 
 
 def load_config():
@@ -39,7 +40,7 @@ def load_config():
                 return json.load(f)
         except Exception:
             pass
-    return {"server_url": DEFAULT_SERVER}
+    return {"server_url": DEFAULT_SERVER, "token": ""}
 
 
 def save_config(cfg):
@@ -60,16 +61,27 @@ except Exception:
 
 
 # ===== API Functions =====
-def api_get(server_url):
-    req = urllib.request.Request(f"{server_url}/api/clipboard")
+def _auth_url(server_url, path, token):
+    """Build an authenticated URL with token query parameter."""
+    url = f"{server_url}{path}"
+    if token:
+        sep = "&" if "?" in url else "?"
+        url += f"{sep}token={urllib.parse.quote(token, safe='')}"
+    return url
+
+
+def api_get(server_url, token=""):
+    url = _auth_url(server_url, "/api/clipboard", token)
+    req = urllib.request.Request(url)
     req.add_header("User-Agent", "ClipboardClient/2.0")
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def api_post(server_url, content):
+def api_post(server_url, content, token=""):
     data = json.dumps({"content": content}).encode("utf-8")
-    req = urllib.request.Request(f"{server_url}/api/clipboard", data=data, method="POST")
+    url = _auth_url(server_url, "/api/clipboard", token)
+    req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", "ClipboardClient/2.0")
     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -87,6 +99,7 @@ class ClipboardApp:
         self.root = tk.Tk()
         self.root.title("剪贴板同步")
         self.server_url = config.get("server_url", DEFAULT_SERVER)
+        self.token = config.get("token", "")
         self.last_content = ""
         self.running = True
         self.tray_icon = None
@@ -261,11 +274,12 @@ class ClipboardApp:
         dlg.configure(bg="#1a1a2e")
         dlg.attributes("-topmost", True)
 
-        dw, dh = 340, 110
+        dw, dh = 340, 175
         sx = self.root.winfo_x() + (self.root.winfo_width() - dw) // 2
         sy = self.root.winfo_y() + self.root.winfo_height() + 4
         dlg.geometry(f"{dw}x{dh}+{sx}+{sy}")
 
+        # Server URL
         tk.Label(dlg, text="服务器地址:", font=("Microsoft YaHei", 9),
                  bg="#1a1a2e", fg="#e2e8f0").pack(anchor=tk.W, padx=14, pady=(12, 4))
 
@@ -275,14 +289,27 @@ class ClipboardApp:
                          borderwidth=1, relief=tk.SOLID)
         entry.pack(fill=tk.X, padx=14, pady=(0, 8))
 
+        # Token
+        tk.Label(dlg, text="Token:", font=("Microsoft YaHei", 9),
+                 bg="#1a1a2e", fg="#e2e8f0").pack(anchor=tk.W, padx=14, pady=(0, 4))
+
+        token_var = tk.StringVar(value=self.token)
+        token_entry = tk.Entry(dlg, textvariable=token_var, font=("Consolas", 10),
+                               bg="#0f172a", fg="#e2e8f0", insertbackground="white",
+                               borderwidth=1, relief=tk.SOLID, show="•")
+        token_entry.pack(fill=tk.X, padx=14, pady=(0, 10))
+
         bf = tk.Frame(dlg, bg="#1a1a2e")
         bf.pack(fill=tk.X, padx=14)
 
         def save():
             u = url_var.get().strip().rstrip("/")
+            t = token_var.get().strip()
             if u:
                 self.server_url = u
+                self.token = t
                 config["server_url"] = u
+                config["token"] = t
                 save_config(config)
                 self._check_conn()
             dlg.destroy()
@@ -301,7 +328,7 @@ class ClipboardApp:
             if not text:
                 self._flash("剪贴板为空", "#f59e0b")
                 return
-            api_post(self.server_url, text)
+            api_post(self.server_url, text, self.token)
             self.last_content = text
             self._set_preview(text)
             self._flash("已上传 ✓", "#22c55e")
@@ -310,7 +337,7 @@ class ClipboardApp:
 
     def _download(self):
         try:
-            data = api_get(self.server_url)
+            data = api_get(self.server_url, self.token)
             text = data.get("content", "")
             if text:
                 self.root.clipboard_clear()
@@ -359,7 +386,7 @@ class ClipboardApp:
         def loop():
             while self.running:
                 try:
-                    data = api_get(self.server_url)
+                    data = api_get(self.server_url, self.token)
                     c = data.get("content", "")
                     if c and c != self.last_content:
                         self.last_content = c

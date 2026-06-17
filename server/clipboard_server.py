@@ -6,6 +6,7 @@ Stores text clipboard content, serves a web UI for mobile access.
 """
 
 import http.server
+import socketserver
 import json
 import urllib.parse
 import os
@@ -397,7 +398,8 @@ async function fetchClipboard() {
     renderHistory(data.history || []);
   } catch(e) {
     if (e.message !== 'Unauthorized') {
-      document.getElementById('status').textContent = 'Retrying...';
+      const errMsg = e.name === 'AbortError' ? 'Request timeout' : (e.message || 'Unknown error');
+      document.getElementById('status').textContent = 'Retrying... (' + errMsg + ')';
       document.getElementById('status').style.color = '#f59e0b';
     }
   }
@@ -669,11 +671,11 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     load_data()
 
-    class ReusableHTTPServer(http.server.HTTPServer):
+    class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         allow_reuse_address = True
-        allow_reuse_port = True
+        daemon_threads = True
 
-    server = ReusableHTTPServer((HOST, PORT), ClipboardHandler)
+    server = ThreadedHTTPServer((HOST, PORT), ClipboardHandler)
     print(f"[CopyLite] Running on http://{HOST}:{PORT}")
     print(f"[CopyLite] Web UI: http://localhost:{PORT}")
     print(f"[CopyLite] API: GET/POST /api/clipboard")

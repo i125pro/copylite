@@ -277,6 +277,19 @@ class ClipboardApp:
         dw, dh = 340, 175
         sx = self.root.winfo_x() + (self.root.winfo_width() - dw) // 2
         sy = self.root.winfo_y() + self.root.winfo_height() + 4
+
+        # 边界检测：确保对话框不超出屏幕
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        if sx + dw > sw:
+            sx = sw - dw - 8
+        if sx < 0:
+            sx = 8
+        if sy + dh > sh:
+            # 下方放不下就放到主窗口上方
+            sy = self.root.winfo_y() - dh - 4
+        if sy < 0:
+            sy = 8
         dlg.geometry(f"{dw}x{dh}+{sx}+{sy}")
 
         # Server URL

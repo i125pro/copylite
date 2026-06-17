@@ -3,7 +3,6 @@
 """
 Cross-Platform Clipboard Server
 Stores text clipboard content, serves a web UI for mobile access.
-Designed to run on Termux (Android).
 """
 
 import http.server
@@ -12,14 +11,47 @@ import urllib.parse
 import os
 import sys
 import time
+import secrets
 import threading
 from datetime import datetime
 
 # ===== Configuration =====
 HOST = "0.0.0.0"
 PORT = 8086
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clipboard_data.json")
-SHORTCUTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shortcuts")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, "clipboard_data.json")
+ENV_FILE = os.path.join(BASE_DIR, ".env")
+SHORTCUTS_DIR = os.path.join(BASE_DIR, "shortcuts")
+
+# ===== Token Authentication =====
+def load_or_create_token():
+    """Load token from .env file, or generate one if not found."""
+    if os.path.exists(ENV_FILE):
+        try:
+            with open(ENV_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("AUTH_TOKEN="):
+                        token = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if token:
+                            return token
+        except Exception:
+            pass
+    # Generate new token
+    token = secrets.token_urlsafe(32)
+    try:
+        with open(ENV_FILE, "w", encoding="utf-8") as f:
+            f.write(f"# CopyLite Authentication Token\n")
+            f.write(f"# Include this token in all requests to access the clipboard service.\n")
+            f.write(f"# Usage: http://your-server:8086?token={token}\n")
+            f.write(f"# Or header: Authorization: Bearer {token}\n")
+            f.write(f"AUTH_TOKEN={token}\n")
+        print(f"[Auth] Generated new token: {token}")
+    except Exception as e:
+        print(f"[Auth] Warning: Could not save token to .env: {e}")
+    return token
+
+AUTH_TOKEN = load_or_create_token()
 
 # ===== In-memory store =====
 clipboard_store = {
@@ -51,7 +83,7 @@ WEB_UI = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>剪贴板服务</title>
+<title>CopyLite</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -178,35 +210,67 @@ WEB_UI = r"""<!DOCTYPE html>
     color: #cbd5e1;
   }
   .empty { text-align: center; color: #475569; padding: 20px; font-size: 0.9rem; }
+  /* Auth overlay */
+  .auth-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #0f172a; z-index: 999;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .auth-overlay h2 { color: #38bdf8; margin-bottom: 8px; font-size: 1.3rem; }
+  .auth-overlay p { color: #64748b; margin-bottom: 20px; font-size: 0.85rem; text-align: center; }
+  .auth-input {
+    width: 100%; max-width: 360px; padding: 12px; background: #1e293b;
+    border: 1px solid #334155; border-radius: 8px; color: #e2e8f0;
+    font-size: 1rem; outline: none; margin-bottom: 12px; font-family: monospace;
+  }
+  .auth-input:focus { border-color: #38bdf8; }
+  .auth-btn {
+    width: 100%; max-width: 360px; padding: 12px; background: #2563eb;
+    color: white; border: none; border-radius: 8px; font-size: 1rem;
+    font-weight: 600; cursor: pointer;
+  }
+  .auth-btn:hover { background: #1d4ed8; }
+  .auth-error { color: #f87171; font-size: 0.85rem; margin-top: 10px; display: none; }
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>📋 剪贴板服务</h1>
-  <div class="status" id="status">连接中...</div>
+
+<!-- Auth Overlay -->
+<div class="auth-overlay" id="authOverlay" style="display:none;">
+  <h2>CopyLite</h2>
+  <p>Enter your access token to continue</p>
+  <input type="password" class="auth-input" id="tokenInput" placeholder="Paste your token here..." autocomplete="off">
+  <button class="auth-btn" onclick="submitToken()">Verify & Enter</button>
+  <div class="auth-error" id="authError">Invalid token, please try again.</div>
+</div>
+
+<div class="container" id="mainApp" style="display:none;">
+  <h1>CopyLite</h1>
+  <div class="status" id="status">Connecting...</div>
 
   <div class="card">
-    <div class="card-title">📤 上传到剪贴板</div>
-    <textarea id="uploadText" placeholder="输入要同步的文本..."></textarea>
+    <div class="card-title">Upload to Clipboard</div>
+    <textarea id="uploadText" placeholder="Enter text to sync..."></textarea>
     <div class="btn-row">
-      <button class="btn btn-primary" onclick="uploadClipboard()">上传</button>
-      <button class="btn btn-secondary" onclick="pasteFromDevice()">从设备粘贴</button>
+      <button class="btn btn-primary" onclick="uploadClipboard()">Upload</button>
+      <button class="btn btn-secondary" onclick="pasteFromDevice()">Paste from Device</button>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">📥 从剪贴板下载</div>
-    <textarea id="downloadText" readonly placeholder="点击下方按钮获取剪贴板内容..."></textarea>
+    <div class="card-title">Download from Clipboard</div>
+    <textarea id="downloadText" readonly placeholder="Click button below to fetch content..."></textarea>
     <div class="btn-row">
-      <button class="btn btn-primary" onclick="downloadClipboard()">下载</button>
-      <button class="btn btn-secondary" onclick="copyToDevice()">复制到设备</button>
+      <button class="btn btn-primary" onclick="downloadClipboard()">Download</button>
+      <button class="btn btn-secondary" onclick="copyToDevice()">Copy to Device</button>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">📜 历史记录</div>
+    <div class="card-title">History</div>
     <div id="historyList">
-      <div class="empty">暂无历史记录</div>
+      <div class="empty">No history yet</div>
     </div>
   </div>
 </div>
@@ -215,7 +279,65 @@ WEB_UI = r"""<!DOCTYPE html>
 
 <script>
 const API_BASE = window.location.origin;
+let authToken = '';
 
+// --- Token Management ---
+function getTokenFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('token') || '';
+}
+
+function initAuth() {
+  const urlToken = getTokenFromURL();
+  if (urlToken) {
+    authToken = urlToken;
+    // Clean URL
+    window.history.replaceState({}, '', window.location.pathname);
+    verifyToken();
+  } else {
+    document.getElementById('authOverlay').style.display = 'flex';
+  }
+}
+
+function submitToken() {
+  const input = document.getElementById('tokenInput').value.trim();
+  if (!input) return;
+  authToken = input;
+  verifyToken();
+}
+
+async function verifyToken() {
+  try {
+    const res = await fetch(API_BASE + '/api/clipboard?token=' + encodeURIComponent(authToken));
+    if (res.ok) {
+      document.getElementById('authOverlay').style.display = 'none';
+      document.getElementById('mainApp').style.display = 'block';
+      fetchClipboard();
+    } else {
+      showAuthError();
+    }
+  } catch(e) {
+    showAuthError();
+  }
+}
+
+function showAuthError() {
+  authToken = '';
+  document.getElementById('authOverlay').style.display = 'flex';
+  document.getElementById('authError').style.display = 'block';
+}
+
+// --- Authenticated Fetch ---
+function authFetch(url, options) {
+  const sep = url.includes('?') ? '&' : '?';
+  const authUrl = url + sep + 'token=' + encodeURIComponent(authToken);
+  return fetch(authUrl, options).then(res => {
+    if (res.status === 401) { showAuthError(); throw new Error('Unauthorized'); }
+    return res;
+  });
+}
+
+// --- Clipboard Operations ---
 function showToast(msg, color) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -226,91 +348,70 @@ function showToast(msg, color) {
 
 async function fetchClipboard() {
   try {
-    const res = await fetch(API_BASE + '/api/clipboard');
+    const res = await authFetch(API_BASE + '/api/clipboard');
     const data = await res.json();
     if (data.content) {
       document.getElementById('downloadText').value = data.content;
     }
-    document.getElementById('status').textContent = '已连接 · 更新于 ' + (data.updated_at || '—');
+    document.getElementById('status').textContent = 'Connected | Updated: ' + (data.updated_at || '-');
     renderHistory(data.history || []);
   } catch(e) {
-    document.getElementById('status').textContent = '连接失败';
-    document.getElementById('status').style.color = '#f87171';
+    if (e.message !== 'Unauthorized') {
+      document.getElementById('status').textContent = 'Connection failed';
+      document.getElementById('status').style.color = '#f87171';
+    }
   }
 }
 
 async function uploadClipboard() {
   const text = document.getElementById('uploadText').value;
-  if (!text.trim()) { showToast('请输入文本', '#ef4444'); return; }
+  if (!text.trim()) { showToast('Please enter text', '#ef4444'); return; }
   try {
-    await fetch(API_BASE + '/api/clipboard', {
+    await authFetch(API_BASE + '/api/clipboard', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({content: text})
     });
-    showToast('上传成功');
+    showToast('Uploaded');
     fetchClipboard();
-  } catch(e) { showToast('上传失败', '#ef4444'); }
+  } catch(e) { if (e.message !== 'Unauthorized') showToast('Upload failed', '#ef4444'); }
 }
 
 async function downloadClipboard() {
   try {
-    const res = await fetch(API_BASE + '/api/clipboard');
+    const res = await authFetch(API_BASE + '/api/clipboard');
     const data = await res.json();
     document.getElementById('downloadText').value = data.content || '';
-    showToast('已获取剪贴板内容');
-  } catch(e) { showToast('下载失败', '#ef4444'); }
+    showToast('Content fetched');
+  } catch(e) { if (e.message !== 'Unauthorized') showToast('Download failed', '#ef4444'); }
 }
 
 async function pasteFromDevice() {
-  // Try modern API first (works on HTTPS/localhost)
   if (navigator.clipboard && navigator.clipboard.readText) {
     try {
       const text = await navigator.clipboard.readText();
       document.getElementById('uploadText').value = text;
-      showToast('已从设备剪贴板读取');
+      showToast('Read from clipboard');
       return;
     } catch(e) {}
   }
-  // Fallback: create a hidden textarea, focus it, and trigger paste
-  try {
-    const ta = document.createElement('textarea');
-    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
-    ta.setAttribute('readonly', '');
-    document.body.appendChild(ta);
-    ta.focus();
-    const ok = document.execCommand('paste');
-    const text = ta.value;
-    document.body.removeChild(ta);
-    if (ok && text) {
-      document.getElementById('uploadText').value = text;
-      showToast('已从设备剪贴板读取');
-    } else {
-      // Final fallback: prompt user
-      promptPaste();
-    }
-  } catch(e) {
-    promptPaste();
-  }
+  promptPaste();
 }
 
 function promptPaste() {
-  const text = prompt('请在下方粘贴你的剪贴板内容（长按粘贴框）：');
+  const text = prompt('Paste your clipboard content below:');
   if (text !== null && text.trim()) {
     document.getElementById('uploadText').value = text;
-    showToast('已从粘贴框读取');
-  } else if (text !== null) {
-    showToast('粘贴内容为空', '#f59e0b');
+    showToast('Content loaded');
   }
 }
 
 function copyToDevice() {
   const text = document.getElementById('downloadText').value;
-  if (!text) { showToast('没有内容可复制', '#ef4444'); return; }
-  // Try modern API first
+  if (!text) { showToast('No content to copy', '#ef4444'); return; }
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(() => {
-      showToast('已复制到设备剪贴板');
+      showToast('Copied to clipboard');
     }).catch(() => fallbackCopy(text));
   } else {
     fallbackCopy(text);
@@ -318,7 +419,6 @@ function copyToDevice() {
 }
 
 function fallbackCopy(text) {
-  // Reliable fallback: create a visible textarea, select, and execCommand
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.style.cssText = 'position:fixed;top:40%;left:10%;width:80%;height:80px;z-index:9999;font-size:16px;padding:10px;border-radius:8px;border:2px solid #38bdf8;background:#0f172a;color:#e2e8f0;text-align:center';
@@ -327,16 +427,16 @@ function fallbackCopy(text) {
   ta.setSelectionRange(0, 99999);
   try {
     document.execCommand('copy');
-    showToast('已复制 ✓');
+    showToast('Copied');
   } catch(e) {
-    showToast('请长按文本框手动复制', '#f59e0b');
+    showToast('Long-press to copy manually', '#f59e0b');
   }
   setTimeout(() => { document.body.removeChild(ta); }, 1500);
 }
 
 function renderHistory(history) {
   const el = document.getElementById('historyList');
-  if (!history.length) { el.innerHTML = '<div class="empty">暂无历史记录</div>'; return; }
+  if (!history.length) { el.innerHTML = '<div class="empty">No history yet</div>'; return; }
   el.innerHTML = history.map((h, i) => `
     <div class="history-item" onclick="useHistory(${i})">
       <div class="history-time">${h.updated_at}</div>
@@ -346,15 +446,12 @@ function renderHistory(history) {
 }
 
 function useHistory(idx) {
-  try {
-    const res = fetch(API_BASE + '/api/clipboard');
-    res.then(r => r.json()).then(data => {
-      if (data.history && data.history[idx]) {
-        document.getElementById('uploadText').value = data.history[idx].content;
-        showToast('已填入历史内容');
-      }
-    });
-  } catch(e) {}
+  authFetch(API_BASE + '/api/clipboard').then(r => r.json()).then(data => {
+    if (data.history && data.history[idx]) {
+      document.getElementById('uploadText').value = data.history[idx].content;
+      showToast('History loaded');
+    }
+  }).catch(() => {});
 }
 
 function escHtml(s) {
@@ -363,9 +460,14 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
-// Auto-refresh every 5s
-fetchClipboard();
-setInterval(fetchClipboard, 5000);
+// Handle Enter key in token input
+document.getElementById('tokenInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') submitToken();
+});
+
+// Init
+initAuth();
+setInterval(() => { if (authToken) fetchClipboard(); }, 5000);
 </script>
 </body>
 </html>"""
@@ -379,7 +481,45 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+    def _check_auth(self):
+        """Check token authentication. Returns True if authorized."""
+        # Check query parameter
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        token_param = params.get("token", [""])[0]
+        if token_param == AUTH_TOKEN:
+            return True
+
+        # Check Authorization header (Bearer token)
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN:
+            return True
+
+        # Check POST body for token field
+        if self.command == "POST":
+            content_type = self.headers.get("Content-Type", "")
+            if "application/json" in content_type:
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    body = self.rfile.read(length).decode("utf-8")
+                    data = json.loads(body)
+                    if data.get("token") == AUTH_TOKEN:
+                        # Re-store body for handler to read
+                        self._post_body = body
+                        return True
+                except Exception:
+                    pass
+
+        return False
+
+    def _send_unauthorized(self):
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": "Unauthorized. Provide a valid token via ?token=, Authorization: Bearer header, or token field in POST body."}).encode("utf-8"))
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -388,6 +528,20 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+
+        # Health check - no auth required
+        if parsed.path == "/api/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+            return
+
+        # All other endpoints require auth
+        if not self._check_auth():
+            self._send_unauthorized()
+            return
 
         if parsed.path == "/" or parsed.path == "/index.html":
             self.send_response(200)
@@ -404,13 +558,6 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
             self._cors()
             self.end_headers()
             self.wfile.write(resp.encode("utf-8"))
-
-        elif parsed.path == "/api/health":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self._cors()
-            self.end_headers()
-            self.wfile.write(b'{"status":"ok"}')
 
         elif parsed.path in ("/copy", "/paste"):
             filename = "copy-from-server.html" if parsed.path == "/copy" else "paste-to-server.html"
@@ -438,8 +585,18 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
 
         if parsed.path == "/api/clipboard":
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length).decode("utf-8")
+            if not self._check_auth():
+                self._send_unauthorized()
+                return
+
+            # Read body (may have been read during auth check)
+            if hasattr(self, '_post_body'):
+                body = self._post_body
+                del self._post_body
+            else:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8")
+
             try:
                 data = json.loads(body)
                 content = data.get("content", "")
@@ -475,12 +632,13 @@ if __name__ == "__main__":
         allow_reuse_port = True
 
     server = ReusableHTTPServer((HOST, PORT), ClipboardHandler)
-    print(f"[Clipboard Server] Running on http://{HOST}:{PORT}")
-    print(f"[Clipboard Server] Web UI: http://localhost:{PORT}")
-    print(f"[Clipboard Server] API: GET/POST /api/clipboard")
+    print(f"[CopyLite] Running on http://{HOST}:{PORT}")
+    print(f"[CopyLite] Web UI: http://localhost:{PORT}")
+    print(f"[CopyLite] API: GET/POST /api/clipboard")
+    print(f"[CopyLite] Token auth enabled. Access with: http://your-server:{PORT}/?token=<your-token>")
     sys.stdout.flush()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[Clipboard Server] Shutting down...")
+        print("\n[CopyLite] Shutting down...")
         server.shutdown()

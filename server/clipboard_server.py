@@ -367,13 +367,17 @@ function showAuthError(msg) {
   }
 }
 
-// --- Authenticated Fetch ---
-function authFetch(url, options) {
+// --- Authenticated Fetch with retry ---
+function authFetch(url, options, retries) {
+  retries = retries || 1;
   const sep = url.includes('?') ? '&' : '?';
   const authUrl = url + sep + 'token=' + encodeURIComponent(authToken);
   return fetchWithTimeout(authUrl, options).then(res => {
     if (res.status === 401) { showAuthError('Invalid token'); throw new Error('Unauthorized'); }
     return res;
+  }).catch(err => {
+    if (err.message === 'Unauthorized' || retries <= 0) throw err;
+    return new Promise(r => setTimeout(r, 2000)).then(() => authFetch(url, options, retries - 1));
   });
 }
 
@@ -516,6 +520,8 @@ setInterval(() => { if (authToken) fetchClipboard(); }, 10000);
 
 # ===== HTTP Handler =====
 class ClipboardHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, format, *args):
         ts = datetime.now().strftime("%H:%M:%S")
         print(f"[{ts}] {args[0]}")
@@ -524,6 +530,7 @@ class ClipboardHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Connection", "close")
 
     def _check_auth(self):
         """Check token authentication. Returns True if authorized."""
